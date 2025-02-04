@@ -8,14 +8,13 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 
 // Define the API request body for QR code
-data class QRCodeRequest(
+data class SupShipArgs(
     val sscc: String,
     val tlcId: Long,
     val shipToLocationId: Long,
     val receiveDate: LocalDate,
     val receiveTime: OffsetDateTime
 )
-
 
 // Define the API response
 data class ApiResponse(
@@ -40,10 +39,9 @@ interface ApiService {
     fun loginUser(@Body loginRequest: LoginRequest): Call<LoginResponse>
 
     // API for sending QR code/PTI data, requires the bearer token in the header
-    @POST("/api/supplier/makeReceiveCte")
+    @POST("/api/cte/receive/makeCteReceive")
     fun sendQRCodeData(
         @Header("Authorization") token: String,  // Bearer token added here
-        @Body qrCodeRequest: QRCodeRequest
+        @Body data: SupShipArgs
     ): Call<ApiResponse>
 }
-

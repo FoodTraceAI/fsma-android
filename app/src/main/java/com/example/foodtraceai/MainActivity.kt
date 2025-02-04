@@ -1,15 +1,12 @@
 package com.example.foodtraceai
 
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -34,26 +31,30 @@ import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import java.util.Calendar
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
-import java.util.Date
 import java.time.LocalDate
 import java.time.OffsetDateTime
-
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
 
 class MainActivity : ComponentActivity() {
-
-
 
     // State variables for user login
     private val emailState = mutableStateOf("")
     private val passwordState = mutableStateOf("")
     private val loginTokenState = mutableStateOf<String?>(null) // Token to be used for authenticated requests
 
+    // State variable to hold the scanned data and display it in the UI.
+    private val scannedDataState = mutableStateOf<String?>(null)
 
-    // Registering a launcher for the  QR, PTI, Data Matrix, or Code 128 scanner.
+    // Camera permission code constant.
+    private val CAMERA_PERMISSION_REQUEST_CODE = 1001
+
+    // SharedPreferences key for storing the token
+    private val sharedPreferences by lazy {
+        getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+    }
+
+    // Registering a launcher for the QR, PTI, Data Matrix, or Code 128 scanner.
     private val qrAndPtiScannerLauncher: ActivityResultLauncher<ScanOptions> =
         registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
             if (result.contents != null) {
@@ -65,14 +66,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    // State variable to hold the scanned data and display it in the UI.
-    private val scannedDataState = mutableStateOf<String?>(null)
-
-    // Camera permission code constant.
-    private val CAMERA_PERMISSION_REQUEST_CODE = 1001
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Retrieve the token from SharedPreferences (if it exists)
+        loginTokenState.value = sharedPreferences.getString("token", null)
 
         // Step 1: Check camera permission for the scanner
         checkCameraPermission()
@@ -103,9 +101,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleLogin(email: String, password: String) {
+        // Create a logging interceptor
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.BODY // Logs request and response bodies
+        }
+
+        // Create an OkHttpClient with the logging interceptor
+        val okHttpClient = OkHttpClient.Builder()
+            .addInterceptor(loggingInterceptor)
+            .build()
+
+        // Build Retrofit with the OkHttpClient
         val retrofit = Retrofit.Builder()
-            .baseUrl("http://localhost:8080/") // Replace with actual server URL
+            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/") // Server URL
             .addConverterFactory(GsonConverterFactory.create())
+            .client(okHttpClient) // Add the OkHttpClient with logging
             .build()
 
         val apiService = retrofit.create(ApiService::class.java)
@@ -113,10 +123,17 @@ class MainActivity : ComponentActivity() {
 
         apiService.loginUser(loginRequest).enqueue(object : Callback<LoginResponse> {
             override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
-                if (response.isSuccessful && response.body() != null) {
-                    // Store the login token and proceed to the scanner
-                    loginTokenState.value = response.body()?.token
-                    Toast.makeText(this@MainActivity, "Login successful!", Toast.LENGTH_SHORT).show()
+                if (response.isSuccessful) {
+                    val loginResponse = response.body()
+                    if (loginResponse != null && loginResponse.token.isNotEmpty()) {
+                        // Store the login token and proceed to the scanner
+                        loginTokenState.value = loginResponse.token
+                        sharedPreferences.edit().putString("token", loginTokenState.value).apply() // Persist token
+                        Toast.makeText(this@MainActivity, "Login successful!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        // Handle invalid response
+                        Toast.makeText(this@MainActivity, "Login failed: Invalid response from server", Toast.LENGTH_SHORT).show()
+                    }
                 } else {
                     // Handle login failure
                     Toast.makeText(this@MainActivity, "Login failed: ${response.message()}", Toast.LENGTH_SHORT).show()
@@ -130,26 +147,26 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-
     // Function to check camera permission and request if not granted.
     private fun checkCameraPermission() {
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             // Request permission if not granted.
             ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
-        } else {
-            // If permission granted, load the UI.
-            setContent {
-                FoodTraceAITheme {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        QRScannerScreen(
-                            onScanClick = { startQrAndPtiLabelScan() },
-                            scannedData = scannedDataState.value // Pass scanned data to the UI.
-                        )
-                    }
-                }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, proceed with scanning
+            } else {
+                // Permission denied, show a message or disable scanning
+                Toast.makeText(this, "Camera permission is required for scanning", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -171,282 +188,250 @@ class MainActivity : ComponentActivity() {
         qrAndPtiScannerLauncher.launch(options)
     }
 
-    // Function to parse scanned data (QR or PTI).
+    // Function to parse scanned data (Custom QR or PTI).
     private fun parseScannedData(scannedData: String): ParsedLabel {
-        return if (scannedData.startsWith("01")) {
-            // Extract GTIN (14 digits after "01")
-            val gtin = scannedData.substring(2, 16)
-
-            // Find Batch Code ("10" indicates the start, but it can have a variable length)
-            val batchStartIndex = scannedData.indexOf("10") + 2 // "10" takes 2 characters
-            val batchEndIndex = scannedData.indexOf("13", batchStartIndex) // Look for "13" for the date of packing
-            val batchCode = if (batchEndIndex > batchStartIndex) {
-                scannedData.substring(batchStartIndex, batchEndIndex).trim()
+        return try {
+            val regex = Regex("A(.*?)B(.*?)C(.*)")
+            val matchResult = regex.matchEntire(scannedData)
+            if (matchResult != null && matchResult.groupValues.size == 4) {
+                // Extract parts based on regex groups
+                ParsedLabel(
+                    type = "Custom",
+                    tlcid = matchResult.groupValues[1],
+                    sscc = matchResult.groupValues[2],
+                    shipToLocationId = matchResult.groupValues[3]
+                )
             } else {
-                scannedData.substring(batchStartIndex).trim() // In case "13" is not found
+                ParsedLabel(type = "Invalid", error = "Scanned data format is not recognized.")
             }
-
-            // Extract Date of Packing (YYMMDD format after "13")
-            val dateOfPacking = if (batchEndIndex != -1) {
-                scannedData.substring(batchEndIndex + 2, batchEndIndex + 8) // Extract 6 characters for YYMMDD
-            } else {
-                ""
-            }
-
-            // Return parsed PTI label data
-            ParsedLabel(
-                type = "PTI",
-                gtin = gtin,
-                batchCode = batchCode,
-                dateOfPacking = dateOfPacking
-            )
-        } else {
-            // This is a QR code, return as it is
-            ParsedLabel(type = "QR", qrData = scannedData)
+        } catch (e: Exception) {
+            ParsedLabel(type = "Invalid", error = "Error parsing scanned data: ${e.message}")
         }
     }
 
     // Sending parsed data to the server using Retrofit.
     private fun sendScannedDataToServer(parsedData: ParsedLabel, token: String?) {
-        // Step 1: Initialize Retrofit instance with base URL and converter
+        if (token == null) {
+            Toast.makeText(this, "User is not logged in", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val retrofit = Retrofit.Builder()
-            .baseUrl("http://localhost:8080/") // Replace with actual server URL
+            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/") // Server URL
             .addConverterFactory(GsonConverterFactory.create())
             .build()
 
-        // Step 2: Create an instance of the API service
         val apiService = retrofit.create(ApiService::class.java)
 
-        // Step 3: Map parsed data to fields in `QRCodeRequest`
-        val qrCodeRequest = QRCodeRequest(
-            sscc = parsedData.gtin ?: "",       // Map `gtin` to `sscc`, or provide an empty string if null
-            tlcId = 123456,                    // Replace with actual `tlcId`
-            shipToLocationId = 78910,         // Replace with actual `shipToLocationId`
-            receiveDate = LocalDate.now(),      // Use the current date for `receiveDate`
-            receiveTime = OffsetDateTime.now()  // Use the current date-time for `receiveTime`
+        val supShipArgs = SupShipArgs(
+            sscc = parsedData.sscc ?: "",
+            tlcId = parsedData.tlcid?.toLongOrNull() ?: 0,
+            shipToLocationId = parsedData.shipToLocationId?.toLongOrNull() ?: 0,
+            receiveDate = LocalDate.now(),
+            receiveTime = OffsetDateTime.now()
         )
 
-        // Step 4: Make API call with populated `QRCodeRequest` and authorization token
-        apiService.sendQRCodeData("Bearer $token", qrCodeRequest).enqueue(object : Callback<ApiResponse> {
+        apiService.sendQRCodeData("Bearer $token", supShipArgs).enqueue(object : Callback<ApiResponse> {
             override fun onResponse(call: Call<ApiResponse>, response: Response<ApiResponse>) {
                 if (response.isSuccessful && response.body() != null) {
-                    // Handle successful response
+                    scannedDataState.value = null // Clear the scanned data
                     Toast.makeText(this@MainActivity, "Data sent successfully!", Toast.LENGTH_SHORT).show()
                 } else {
-                    // Handle unsuccessful response (e.g., error from server)
                     Toast.makeText(this@MainActivity, "Failed to send data: ${response.message()}", Toast.LENGTH_SHORT).show()
                 }
             }
 
             override fun onFailure(call: Call<ApiResponse>, t: Throwable) {
-                // Handle failure (e.g., network issue)
                 Toast.makeText(this@MainActivity, "Error: ${t.message}", Toast.LENGTH_SHORT).show()
             }
         })
     }
 
-// Data class to hold parsed label information.
-data class ParsedLabel(
-    val type: String,
-    val gtin: String? = null,
-    val batchCode: String? = null,
-    val dateOfPacking: String? = null,
-    val qrData: String? = null
-)
+    // Data class to hold parsed label information.
+    data class ParsedLabel(
+        val type: String,
+        val tlcid: String? = null,
+        val sscc: String? = null,
+        val shipToLocationId: String? = null,
+        val error: String? = null
+    )
 
-@Composable
-fun LoginScreen(onLoginClick: (String, String) -> Unit) {
-    // Define the username and password states
-    val emailState = remember { mutableStateOf("") }
-    val passwordState = remember { mutableStateOf("") }
+    @Composable
+    fun LoginScreen(onLoginClick: (String, String) -> Unit) {
+        val emailState = remember { mutableStateOf("") }
+        val passwordState = remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "FoodTraceAI",
-            fontSize = 40.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Black,
-            modifier = Modifier.padding(bottom = 24.dp)
-        )
-
-        // Card wrapping the input fields
-        Card(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            elevation = CardDefaults.cardElevation(8.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White) // White background for input fields
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp)
-            ) {
-                // Username OutlinedTextField
-                OutlinedTextField(
-                    value = emailState.value,
-                    onValueChange = { emailState.value = it },
-                    label = { Text("Email") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "FoodTraceAI",
+                fontSize = 40.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
 
-                // Password OutlinedTextField with visual transformation
-                OutlinedTextField(
-                    value = passwordState.value,
-                    onValueChange = { passwordState.value = it },
-                    label = { Text("Password") },
-                    modifier = Modifier.fillMaxWidth(),
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                elevation = CardDefaults.cardElevation(8.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    OutlinedTextField(
+                        value = emailState.value,
+                        onValueChange = { emailState.value = it },
+                        label = { Text("Email") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = passwordState.value,
+                        onValueChange = { passwordState.value = it },
+                        label = { Text("Password") },
+                        modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = { onLoginClick(emailState.value, passwordState.value) },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(Color(0xFF880E4F))
+            ) {
+                Text("Login", color = Color.White, fontSize = 20.sp)
+            }
+        }
+    }
+
+    @Preview(showBackground = true)
+    @Composable
+    fun LoginScreenPreview() {
+        FoodTraceAITheme {
+            LoginScreen(onLoginClick = { _, _ -> })
+        }
+    }
+
+    @Composable
+    fun QRScannerScreen(onScanClick: () -> Unit, scannedData: String?) {
+        var showDialog by remember { mutableStateOf(false) }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "FoodTraceAI",
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+
+            Button(
+                onClick = onScanClick,
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .height(60.dp)
+                    .padding(bottom = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(Color(0xFF6A1B9A))
+            ) {
+                Text(
+                    text = "Scan: QR, PTI, Data Matrix, or Code 128",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+            }
+
+            scannedData?.let {
+                Text(
+                    text = "Scanned Data: $it",
+                    fontSize = 16.sp,
+                    color = Color(0xFF333333),
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+            }
+
+            Button(
+                onClick = { showDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .height(50.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(Color(0xFF880E4F))
+            ) {
+                Text(
+                    text = "Updates",
+                    fontSize = 16.sp,
+                    color = Color.White
+                )
+            }
+
+            if (showDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDialog = false },
+                    title = {
+                        Text(
+                            text = "FSMA 204 Updates",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 22.sp,
+                            color = Color(0xFF1E88E5)
+                        )
+                    },
+                    text = {
+                        Column {
+                            Text(
+                                text = "FSMA 204 ensures faster identification and removal of potentially contaminated foods.",
+                                fontSize = 16.sp,
+                                color = Color(0xFF333333)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "This update helps ensure compliance with the Food Safety Modernization Act, enhancing food safety in the supply chain.",
+                                fontSize = 16.sp,
+                                color = Color(0xFF333333)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showDialog = false }) {
+                            Text(
+                                "OK",
+                                color = Color(0xFF1E88E5),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 )
             }
         }
+    }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = { onLoginClick(emailState.value, passwordState.value) },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(Color(0xFF880E4F))
-        ) {
-            Text("Login", color = Color.White, fontSize = 20.sp)
+    @Preview(showBackground = true)
+    @Composable
+    fun QRScannerPreview() {
+        FoodTraceAITheme {
+            QRScannerScreen(onScanClick = {}, scannedData = null)
         }
     }
 }
-
-
-
-
-
-@Preview(showBackground = true)
-@Composable
-fun LoginScreenPreview() {
-    FoodTraceAITheme {
-        LoginScreen(onLoginClick = { _, _ -> })
-    }
-}
-
-
-@Composable
-fun QRScannerScreen(onScanClick: () -> Unit, scannedData: String?) {
-    var showDialog by remember { mutableStateOf(false) } // State to control the Updates dialog.
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        //  App name at the top, with black color and modern font.
-        Text(
-            text = "FoodTraceAI",
-            fontSize = 36.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Black, // Changed to black for a sleek appearance.
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(bottom = 24.dp) // Space between title and buttons.
-        )
-
-        // "Scan: QR, PTI, Data Matrix, or Code 128" button with dark purple.
-        Button(
-            onClick = onScanClick,
-            modifier = Modifier
-                .fillMaxWidth(0.8f) // Button takes 80% of the screen width.
-                .height(60.dp) // Button height.
-                .padding(bottom = 16.dp), // Space below the button.
-            shape = RoundedCornerShape(12.dp), // Rounded corners for a modern look.
-            colors = ButtonDefaults.buttonColors(Color(0xFF6A1B9A)) // Dark purple color.
-        ) {
-            Text(
-                text = "Scan: QR, PTI, Data Matrix, or Code 128",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White
-            )
-        }
-
-        // Display scanned data if available, with slight style tweaks.
-        scannedData?.let {
-            Text(
-                text = "Scanned Data: $it", // Show the scanned QR or PTI label data.
-                fontSize = 16.sp,
-                color = Color(0xFF333333),
-                modifier = Modifier.padding(vertical = 16.dp) // Add padding around the text.
-            )
-        }
-
-        // "Updates" button with dark maroon color.
-        Button(
-            onClick = { showDialog = true }, // Show the dialog on click.
-            modifier = Modifier
-                .fillMaxWidth(0.8f)
-                .height(50.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(Color(0xFF880E4F)) // Dark maroon color.
-        ) {
-            Text(
-                text = "Updates",
-                fontSize = 16.sp,
-                color = Color.White
-            )
-        }
-
-        // Enhanced FSMA 204 Updates dialog box with sleek design and cleaner text layout.
-        if (showDialog) {
-            AlertDialog(
-                onDismissRequest = { showDialog = false },
-                title = {
-                    Text(
-                        text = "FSMA 204 Updates",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 22.sp, // Slightly larger title for emphasis.
-                        color = Color(0xFF1E88E5)
-                    )
-                },
-                text = {
-                    Column {
-                        Text(
-                            text = "FSMA 204 ensures faster identification and removal of potentially contaminated foods.",
-                            fontSize = 16.sp,
-                            color = Color(0xFF333333)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp)) // Space between paragraphs.
-                        Text(
-                            text = "This update helps ensure compliance with the Food Safety Modernization Act, enhancing food safety in the supply chain.",
-                            fontSize = 16.sp,
-                            color = Color(0xFF333333)
-                        )
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showDialog = false }) {
-                        Text(
-                            "OK",
-                            color = Color(0xFF1E88E5), // Same color for consistency.
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            )
-        }
-    }
-}
-
-
-// Preview for UI testing and design review.
-@Preview(showBackground = true)
-@Composable
-fun QRScannerPreview() {
-    FoodTraceAITheme {
-        QRScannerScreen(onScanClick = {}, scannedData = null)
-    }
-}}
