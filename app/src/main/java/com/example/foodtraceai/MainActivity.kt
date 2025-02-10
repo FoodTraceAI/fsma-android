@@ -35,89 +35,95 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import com.google.gson.annotations.SerializedName
+import android.util.Log
+import com.google.gson.GsonBuilder
+import java.time.format.DateTimeFormatter
+
+import com.google.gson.TypeAdapter
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonWriter
+import java.io.IOException
+
 
 class MainActivity : ComponentActivity() {
 
-    // State variables for user login
-    private val emailState = mutableStateOf("")
-    private val passwordState = mutableStateOf("")
-    private val loginTokenState = mutableStateOf<String?>(null) // Token to be used for authenticated requests
-
-    // State variable to hold the scanned data and display it in the UI.
+    // State variables
+    private val loginTokenState = mutableStateOf<String?>(null)
     private val scannedDataState = mutableStateOf<String?>(null)
 
-    // Camera permission code constant.
-    private val CAMERA_PERMISSION_REQUEST_CODE = 1001
-
-    // SharedPreferences key for storing the token
+    // SharedPreferences instance
     private val sharedPreferences by lazy {
         getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
     }
 
-    // Registering a launcher for the QR, PTI, Data Matrix, or Code 128 scanner.
+    // Camera permission constant
+    private val CAMERA_PERMISSION_REQUEST_CODE = 1001
+
+    // QR Scanner Launcher
     private val qrAndPtiScannerLauncher: ActivityResultLauncher<ScanOptions> =
         registerForActivityResult(ScanContract()) { result: ScanIntentResult ->
-            if (result.contents != null) {
-                // QR, PTI, Data Matrix, or Code 128 scan successful; display and send to the server.
-                val scannedData = result.contents
-                scannedDataState.value = scannedData // Display the scanned data in the preview.
-                val parsedData = parseScannedData(scannedData) // Parse the scanned data
-                sendScannedDataToServer(parsedData, loginTokenState.value) // Send the parsed data to the server.
+            result.contents?.let { scannedData ->
+                scannedDataState.value = scannedData // Update UI
+                sendScannedDataToServer(parseScannedData(scannedData), loginTokenState.value)
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Retrieve the token from SharedPreferences (if it exists)
+        // Retrieve token from SharedPreferences
         loginTokenState.value = sharedPreferences.getString("token", null)
 
-        // Step 1: Check camera permission for the scanner
-        checkCameraPermission()
-
-        // Step 2: Set content based on login status
         setContent {
             FoodTraceAITheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // Check if a token is stored (indicating user is logged in)
-                    if (loginTokenState.value != null) {
-                        // User is logged in, show the QR scanner screen
+                    val token = loginTokenState.value
+
+                    if (!token.isNullOrEmpty()) {
                         QRScannerScreen(
-                            onScanClick = { startQrAndPtiLabelScan() },
-                            scannedData = scannedDataState.value // Pass scanned data to the UI.
+                            onScanClick = { checkCameraPermissionAndScan() },
+                            scannedData = scannedDataState.value
                         )
                     } else {
-                        // User is not logged in, show the login screen
                         LoginScreen(
-                            onLoginClick = { username, password -> handleLogin(username, password) }
+                            onLoginClick = { email, password -> handleLogin(email, password) }
                         )
                     }
                 }
             }
         }
     }
+    private fun checkCameraPermissionAndScan() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+        } else {
+            startQrAndPtiLabelScan() // Start the scan if permission is granted
+        }
+    }
+    private fun showToast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
 
     private fun handleLogin(email: String, password: String) {
-        // Create a logging interceptor
+
         val loggingInterceptor = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BODY // Logs request and response bodies
         }
 
-        // Create an OkHttpClient with the logging interceptor
         val okHttpClient = OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
             .build()
 
-        // Build Retrofit with the OkHttpClient
         val retrofit = Retrofit.Builder()
-            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/") // Server URL
+            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/")
             .addConverterFactory(GsonConverterFactory.create())
-            .client(okHttpClient) // Add the OkHttpClient with logging
+            .client(okHttpClient)
             .build()
-
         val apiService = retrofit.create(ApiService::class.java)
         val loginRequest = LoginRequest(email, password)
 
@@ -125,26 +131,31 @@ class MainActivity : ComponentActivity() {
             override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                 if (response.isSuccessful) {
                     val loginResponse = response.body()
-                    if (loginResponse != null && loginResponse.token.isNotEmpty()) {
-                        // Store the login token and proceed to the scanner
-                        loginTokenState.value = loginResponse.token
-                        sharedPreferences.edit().putString("token", loginTokenState.value).apply() // Persist token
-                        Toast.makeText(this@MainActivity, "Login successful!", Toast.LENGTH_SHORT).show()
+                    if (loginResponse != null && !loginResponse.accessToken.isNullOrEmpty()) {
+                        //  Correctly extract the access token
+                        saveTokenAndNavigate(loginResponse.accessToken)
                     } else {
-                        // Handle invalid response
-                        Toast.makeText(this@MainActivity, "Login failed: Invalid response from server", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "Invalid token received", Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    // Handle login failure
-                    Toast.makeText(this@MainActivity, "Login failed: ${response.message()}", Toast.LENGTH_SHORT).show()
+                    val errorMessage = response.errorBody()?.string() ?: "Unknown error"
+                    Toast.makeText(this@MainActivity, "Login failed: $errorMessage", Toast.LENGTH_SHORT).show()
                 }
             }
 
             override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
-                // Show error message if login request fails
-                Toast.makeText(this@MainActivity, "Error: ${t.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Error: ${t.message}", Toast.LENGTH_LONG).show()
             }
         })
+    }
+
+
+
+
+    private fun saveTokenAndNavigate(token: String) {
+        sharedPreferences.edit().putString("token", token).apply()
+        loginTokenState.value = token // UI updates automatically
+        showToast("Login successful!")
     }
 
     // Function to check camera permission and request if not granted.
@@ -166,7 +177,7 @@ class MainActivity : ComponentActivity() {
                 // Permission granted, proceed with scanning
             } else {
                 // Permission denied, show a message or disable scanning
-                Toast.makeText(this, "Camera permission is required for scanning", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Camera permission is required for scanning", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -177,7 +188,7 @@ class MainActivity : ComponentActivity() {
             setPrompt("QR, PTI, Data Matrix, or Code 128") // Prompt message during scan.
             setBeepEnabled(true) // Beep sound on scan success.
             setOrientationLocked(false) // Allow device orientation changes during scan.
-            setDesiredBarcodeFormats( // Specify supported formats for both QR and PTI labels.
+            setDesiredBarcodeFormats( //
                 listOf(
                     BarcodeFormat.QR_CODE.name, // QR Code
                     BarcodeFormat.DATA_MATRIX.name, // Common for PTI labels
@@ -191,58 +202,94 @@ class MainActivity : ComponentActivity() {
     // Function to parse scanned data (Custom QR or PTI).
     private fun parseScannedData(scannedData: String): ParsedLabel {
         return try {
-            val regex = Regex("A(.*?)B(.*?)C(.*)")
-            val matchResult = regex.matchEntire(scannedData)
-            if (matchResult != null && matchResult.groupValues.size == 4) {
-                // Extract parts based on regex groups
-                ParsedLabel(
-                    type = "Custom",
-                    tlcid = matchResult.groupValues[1],
-                    sscc = matchResult.groupValues[2],
-                    shipToLocationId = matchResult.groupValues[3]
-                )
+            if (scannedData.startsWith("A") && scannedData.contains("B") && scannedData.contains("C")) {
+                val cleanedData = scannedData.trim()
+
+                val parts = cleanedData.substring(1).split("B", "C")
+                if (parts.size == 3) {
+                    Log.d("PARSING", "Split parts: $parts")
+                    ParsedLabel(
+                        type = "Custom",
+                        tlcid = parts[0],
+                        sscc = parts[1],
+                        shipToLocationId = parts[2]
+                    )
+                } else {
+                    Log.e("PARSING", "Unexpected format: $scannedData")
+                    ParsedLabel(type = "Invalid", error = "Format not recognized")
+                }
             } else {
-                ParsedLabel(type = "Invalid", error = "Scanned data format is not recognized.")
+                Log.e("PARSING", "Invalid label format: $scannedData")
+                ParsedLabel(type = "Invalid", error = "Format not recognized")
             }
         } catch (e: Exception) {
-            ParsedLabel(type = "Invalid", error = "Error parsing scanned data: ${e.message}")
+            Log.e("PARSING", "Error parsing: ${e.stackTraceToString()}")
+            ParsedLabel(type = "Invalid", error = "Parsing error: ${e.message}")
         }
     }
+
 
     // Sending parsed data to the server using Retrofit.
     private fun sendScannedDataToServer(parsedData: ParsedLabel, token: String?) {
         if (token == null) {
-            Toast.makeText(this, "User is not logged in", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "User is not logged in", Toast.LENGTH_LONG).show()
             return
         }
+        // logging interceptor
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.BODY
+        }
 
-        val retrofit = Retrofit.Builder()
-            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/") // Server URL
-            .addConverterFactory(GsonConverterFactory.create())
+        val okHttpClient = OkHttpClient.Builder()
+            .addInterceptor(loggingInterceptor)
             .build()
 
+
+        val gson = GsonBuilder()
+            .registerTypeAdapter(LocalDate::class.java, LocalDateAdapter())
+            .registerTypeAdapter(OffsetDateTime::class.java, OffsetDateTimeAdapter())
+            .create()
+
+        val retrofit = Retrofit.Builder()
+            .baseUrl("http://fsma-loadbalancer-1104915305.us-east-2.elb.amazonaws.com/api/v1/")
+            .addConverterFactory(GsonConverterFactory.create(gson))
+            .client(okHttpClient)
+            .build()
         val apiService = retrofit.create(ApiService::class.java)
 
         val supShipArgs = SupShipArgs(
             sscc = parsedData.sscc ?: "",
-            tlcId = parsedData.tlcid?.toLongOrNull() ?: 0,
-            shipToLocationId = parsedData.shipToLocationId?.toLongOrNull() ?: 0,
+            tlcId = parsedData.tlcid?.toLongOrNull() ?: run {
+                Toast.makeText(this, "Invalid TLC ID", Toast.LENGTH_SHORT).show()
+                return
+            },
+            shipToLocationId = parsedData.shipToLocationId?.toLongOrNull() ?: run {
+                Toast.makeText(this, "Invalid Ship To Location ID", Toast.LENGTH_SHORT).show()
+                return
+            },
             receiveDate = LocalDate.now(),
             receiveTime = OffsetDateTime.now()
         )
+        Log.d("API_REQUEST", "Sending data: $supShipArgs")
 
         apiService.sendQRCodeData("Bearer $token", supShipArgs).enqueue(object : Callback<ApiResponse> {
             override fun onResponse(call: Call<ApiResponse>, response: Response<ApiResponse>) {
-                if (response.isSuccessful && response.body() != null) {
-                    scannedDataState.value = null // Clear the scanned data
-                    Toast.makeText(this@MainActivity, "Data sent successfully!", Toast.LENGTH_SHORT).show()
+                if (response.isSuccessful) {
+                    Toast.makeText(this@MainActivity, "Data sent successfully!", Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Failed to send data: ${response.message()}", Toast.LENGTH_SHORT).show()
+                    val errorBody = response.errorBody()?.string()
+                    Log.e("API_ERROR", "Failed to send data: $errorBody")
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Failed to send data: ${errorBody ?: response.code()}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
 
             override fun onFailure(call: Call<ApiResponse>, t: Throwable) {
-                Toast.makeText(this@MainActivity, "Error: ${t.message}", Toast.LENGTH_SHORT).show()
+                Log.e("API_FAILURE", "Network error: ${t.message}")
+                Toast.makeText(this@MainActivity, "Network error: ${t.message}", Toast.LENGTH_LONG).show()
             }
         })
     }

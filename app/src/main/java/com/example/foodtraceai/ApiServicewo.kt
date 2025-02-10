@@ -6,13 +6,21 @@ import retrofit2.http.Header
 import retrofit2.http.POST
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import com.google.gson.annotations.SerializedName
+import retrofit2.Callback
+
 
 // Define the API request body for QR code
 data class SupShipArgs(
+    @SerializedName("sscc")
     val sscc: String,
+    @SerializedName("tlcId")
     val tlcId: Long,
+    @SerializedName("shipTolocationId") //
     val shipToLocationId: Long,
+    @SerializedName("receiveDate")
     val receiveDate: LocalDate,
+    @SerializedName("receiveTime")
     val receiveTime: OffsetDateTime
 )
 
@@ -29,19 +37,18 @@ data class LoginRequest(
 )
 
 // Define the login response with a bearer token
-data class LoginResponse(
-    val token: String
-)
+
 
 interface ApiService {
     // API for user login, returns a LoginResponse with the bearer token
-    @POST("/api/login")
-    fun loginUser(@Body loginRequest: LoginRequest): Call<LoginResponse>
+    @POST("auth/login")
+    fun loginUser(@Body request: LoginRequest): Call<LoginResponse>
+
 
     // API for sending QR code/PTI data, requires the bearer token in the header
-    @POST("/api/cte/receive/makeCteReceive")
+    @POST("cte/receive/makeCteReceive")
     fun sendQRCodeData(
-        @Header("Authorization") token: String,  // Bearer token added here
+        @Header("Authorization") accessToken: String,  // Bearer token added here
         @Body data: SupShipArgs
     ): Call<ApiResponse>
 }

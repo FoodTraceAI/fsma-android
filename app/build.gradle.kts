@@ -97,9 +97,12 @@ dependencies {
 
     // Permissions handling for camera and other resources
     implementation("androidx.core:core-ktx:1.10.0")
+    implementation ("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation ("com.squareup.retrofit2:converter-gson:2.9.0")
 
     // AndroidX DataStore for key-value data storage
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
-    // Remove PostgreSQL dependency if not used in the app
+    implementation ("com.google.code.gson:gson:2.10.1")
+
 }
