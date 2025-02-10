@@ -16,8 +16,8 @@ data class SupShipArgs(
     val sscc: String,
     @SerializedName("tlcId")
     val tlcId: Long,
-    @SerializedName("shipTolocationId") //
-    val shipToLocationId: Long,
+    @SerializedName("receiveLocationId") //
+    val receiveLocationId: Long,
     @SerializedName("receiveDate")
     val receiveDate: LocalDate,
     @SerializedName("receiveTime")

@@ -212,7 +212,7 @@ class MainActivity : ComponentActivity() {
                         type = "Custom",
                         tlcid = parts[0],
                         sscc = parts[1],
-                        shipToLocationId = parts[2]
+                        receiveLocationId = parts[2]
                     )
                 } else {
                     Log.e("PARSING", "Unexpected format: $scannedData")
@@ -263,7 +263,7 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this, "Invalid TLC ID", Toast.LENGTH_SHORT).show()
                 return
             },
-            shipToLocationId = parsedData.shipToLocationId?.toLongOrNull() ?: run {
+            receiveLocationId = parsedData.receiveLocationId?.toLongOrNull() ?: run {
                 Toast.makeText(this, "Invalid Ship To Location ID", Toast.LENGTH_SHORT).show()
                 return
             },
@@ -299,7 +299,7 @@ class MainActivity : ComponentActivity() {
         val type: String,
         val tlcid: String? = null,
         val sscc: String? = null,
-        val shipToLocationId: String? = null,
+        val receiveLocationId: String? = null,
         val error: String? = null
     )
 
