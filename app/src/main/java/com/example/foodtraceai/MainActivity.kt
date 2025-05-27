@@ -272,26 +272,25 @@ class MainActivity : ComponentActivity() {
         )
         Log.d("API_REQUEST", "Sending data: $supShipArgs")
 
-        apiService.sendQRCodeData("Bearer $token", supShipArgs).enqueue(object : Callback<ApiResponse> {
-            override fun onResponse(call: Call<ApiResponse>, response: Response<ApiResponse>) {
+        apiService.sendQRCodeData("Bearer $token", supShipArgs).enqueue(object : Callback<String> {
+            override fun onResponse(call: Call<String>, response: Response<String>) {
                 if (response.isSuccessful) {
-                    Toast.makeText(this@MainActivity, "Data sent successfully!", Toast.LENGTH_LONG).show()
+                    val responseBody = response.body()
+                    Log.d("API_RESPONSE", "Server response: $responseBody")
+                    Toast.makeText(this@MainActivity, responseBody ?: "Unknown response", Toast.LENGTH_LONG).show()
                 } else {
                     val errorBody = response.errorBody()?.string()
                     Log.e("API_ERROR", "Failed to send data: $errorBody")
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Failed to send data: ${errorBody ?: response.code()}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(this@MainActivity, "Error: ${errorBody ?: response.code()}", Toast.LENGTH_LONG).show()
                 }
             }
 
-            override fun onFailure(call: Call<ApiResponse>, t: Throwable) {
+            override fun onFailure(call: Call<String>, t: Throwable) {
                 Log.e("API_FAILURE", "Network error: ${t.message}")
                 Toast.makeText(this@MainActivity, "Network error: ${t.message}", Toast.LENGTH_LONG).show()
             }
         })
+
     }
 
     // Data class to hold parsed label information.

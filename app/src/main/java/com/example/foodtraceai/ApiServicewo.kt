@@ -27,7 +27,8 @@ data class SupShipArgs(
 // Define the API response
 data class ApiResponse(
     val success: Boolean,
-    val message: String
+    val message: String,
+
 )
 
 // Define the login request body
@@ -50,5 +51,5 @@ interface ApiService {
     fun sendQRCodeData(
         @Header("Authorization") accessToken: String,  // Bearer token added here
         @Body data: SupShipArgs
-    ): Call<ApiResponse>
+    ): Call<String>
 }
